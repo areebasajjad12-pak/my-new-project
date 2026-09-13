@@ -24,10 +24,7 @@ var rdb *redis.Client
 var ctx = context.Background()
 
 func main() {
-	err := godotenv.Load()
-	if err != nil {
-		log.Println("Warning: .env file not found")
-	}
+	_ = godotenv.Load()
 
 	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
 		os.Getenv("DB_HOST"),
@@ -37,6 +34,7 @@ func main() {
 		os.Getenv("DB_NAME"),
 	)
 
+	var err error
 	db, err = sql.Open("postgres", connStr)
 	if err != nil {
 		log.Fatal("Failed to open DB connection: ", err)
