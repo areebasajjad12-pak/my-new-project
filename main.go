@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+	"github.com/redis/go-redis/v9"
 )
 
 type User struct {
@@ -18,12 +20,11 @@ type User struct {
 }
 
 var db *sql.DB
+var rdb *redis.Client
+var ctx = context.Background()
 
 func main() {
-	err := godotenv.Load()
-	if err != nil {
-		log.Println("Warning: .env file not found")
-	}
+	_ = godotenv.Load()
 
 	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
 		os.Getenv("DB_HOST"),
@@ -33,6 +34,7 @@ func main() {
 		os.Getenv("DB_NAME"),
 	)
 
+	var err error
 	db, err = sql.Open("postgres", connStr)
 	if err != nil {
 		log.Fatal("Failed to open DB connection: ", err)
@@ -43,6 +45,17 @@ func main() {
 		log.Fatal("Failed to connect to database: ", err)
 	}
 	fmt.Println("Connected to database successfully")
+
+	rdb = redis.NewClient(&redis.Options{
+		Addr:     os.Getenv("REDIS_ADDR"),
+		Password: os.Getenv("REDIS_PASSWORD"),
+		DB:       0,
+	})
+
+	if _, err := rdb.Ping(ctx).Result(); err != nil {
+		log.Fatal("Failed to connect to Redis: ", err)
+	}
+	fmt.Println("Connected to Redis successfully")
 
 	http.HandleFunc("/users", createUserHandler)
 
@@ -71,10 +84,22 @@ func createUserHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 1. Write to Postgres (source of truth)
 	_, err := db.Exec("INSERT INTO users (name, email) VALUES ($1, $2)", u.Name, u.Email)
 	if err != nil {
 		http.Error(w, "Failed to insert user: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// 2. Mirror to Redis (cache)
+	userJSON, err := json.Marshal(u)
+	if err != nil {
+		log.Println("Warning: failed to marshal user for cache:", err)
+	} else {
+		cacheKey := "user:" + u.Email
+		if err := rdb.Set(ctx, cacheKey, userJSON, 0).Err(); err != nil {
+			log.Println("Warning: failed to cache user in Redis:", err)
+		}
 	}
 
 	w.WriteHeader(http.StatusCreated)
